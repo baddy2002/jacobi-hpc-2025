@@ -16,11 +16,11 @@ extern "C" {
 #endif
 
 #ifndef NUM_STREAMS
-#define NUM_STREAMS 2
+#define NUM_STREAMS 4
 #endif
 
 #ifndef NUM_THREAD_BLOCK
-#define NUM_THREAD_BLOCK 2
+#define NUM_THREAD_BLOCK 16
 #endif
 
 #ifndef TILE_W

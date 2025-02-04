@@ -164,18 +164,15 @@ __global__ void kernel_jacobi_cuda_v2(int n, DATA_TYPE *A, DATA_TYPE *B) {
     }
     // Sincronizzare i thread per assicurarsi che tutti i dati siano caricati nella memoria condivisa
     __syncthreads();
-
     // Calcoliamo gli elementi, usando la memoria condivisa se disponibile
     for (int i = i_start+1; i < i_start + TILE_W +1 && i < n - 1; i++) {
         for (int j = j_start+1; j < j_start + TILE_W+1 && j < n - 1; j++) {
             int i_shared_offset = i - (i_start+1 );  // nel caso di TILE_W>0
             int j_shared_offset = j - (j_start+1);
-            if(threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 1 && blockIdx.y == 0)
 
             // Calcoliamo solo se gli indici sono validi nella memoria condivisa
             if (i_shared_offset+i_shared < WORK_BLOCK &&
                 j_shared_offset+j_shared < WORK_BLOCK) {
-                if(threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 1 && blockIdx.y == 0)
 
                 B[i * n + j] = 0.2 * (A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared] +
                                       A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared - 1] +
@@ -191,72 +188,71 @@ __global__ void kernel_jacobi_cuda_v2(int n, DATA_TYPE *A, DATA_TYPE *B) {
             A[i * n + j] = B[i * n + j];
     	}
     }
-
 }
-
 void kernel_jacobi_cuda_v2_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
     dim3 block(NUM_THREAD_BLOCK, NUM_THREAD_BLOCK);
     int el_per_thread = (NUM_THREAD_BLOCK * TILE_W);
     int size_x = ((n-2)+ block.x - 1); int size_y = ((n-2) + block.y - 1);
     dim3 grid( size_x / el_per_thread, size_y / el_per_thread );
-
+    #ifndef ROW_DEEP
+	#define ROW_DEEP ((NUM_STREAMS > (grid.y)) ? (NUM_STREAMS) : (grid.y))
+	#endif
     // Creazione degli stream
-    cudaStream_t *streams = new cudaStream_t[NUM_STREAMS];
-    for (int i = 0; i < NUM_STREAMS; i++) {
+    cudaStream_t *streams = new cudaStream_t[ROW_DEEP];
+    for (int i = 0; i < ROW_DEEP; i++) {
         cudaStreamCreate(&streams[i]);
     }
 
-   // Allocazione di memoria UVM per ogni stream
-    DATA_TYPE **uvm_A = new DATA_TYPE*[NUM_STREAMS];
-    DATA_TYPE **uvm_B = new DATA_TYPE*[NUM_STREAMS];
-    for (int i = 0; i < NUM_STREAMS; i++) {
-        cudaMallocManaged(&uvm_A[i], n * n * sizeof(DATA_TYPE));
-        cudaMallocManaged(&uvm_B[i], n * n * sizeof(DATA_TYPE));
-    }
+    DATA_TYPE *uvm_A, *uvm_B;
 
-    // Suddivisione della matrice in blocchi per gli stream
-    int rows_per_stream = (n + NUM_STREAMS - 1) / NUM_STREAMS;
+    // Allocazione di memoria UVM
+    cudaMallocManaged(&uvm_A, n * n * sizeof(DATA_TYPE));
+    cudaMallocManaged(&uvm_B, n * n * sizeof(DATA_TYPE));
 
     start_cuda_kernel(timer);
+
+#pragma omp parallel num_threads(ROW_DEEP)
+{
     for (int t = 0; t < tsteps; t++) {
-      for (int i = 0; i < NUM_STREAMS; i++) {
-            int start_row = i * (rows_per_stream - 2 * WORK_BLOCK); // Sovrapposizione per i bordi
-            int end_row = (i == NUM_STREAMS - 1) ? n : (i + 1) * (rows_per_stream - 2 * WORK_BLOCK);
-
-            // Aggiungi i bordi
-            int start_row_with_borders = max(0, start_row - WORK_BLOCK);
-            int end_row_with_borders = min(n, end_row + WORK_BLOCK);
-
-            // Copia asincrona dei dati in UVM per ogni stream
-            cudaMemcpyAsync(uvm_A[i] + start_row_with_borders * n,
-                            A + start_row_with_borders * n,
-                            (end_row_with_borders - start_row_with_borders) * n * sizeof(DATA_TYPE),
-                            cudaMemcpyHostToDevice, streams[i]);
-
+      int thread_num = omp_get_thread_num();
+      //un thread per stream, ogni thread aspetterà il rispettivo stream
+#pragma omp for
+      for (int i = 0; i < ROW_DEEP; i++) {
+        	//se la dimensione della griglia è maggiore degli stream, uno stesso stream eseguirà più chiamate
+			int start = (thread_num)*(WORK_BLOCK-1)-1*(thread_num);
+            // Copia asincrona dei dati in UVM per ogni stream ()
+            cudaMemcpyAsync(&uvm_A[start * n],
+                &A[start * n],
+                WORK_BLOCK * n * sizeof(DATA_TYPE),
+                cudaMemcpyHostToDevice, streams[thread_num]);
+			 cudaStreamSynchronize(streams[thread_num]);
             // Esecuzione del kernel per ogni stream
-            kernel_jacobi_cuda_v2<<<grid, block, 0, streams[i]>>>(n, uvm_A[i], uvm_B[i]);
+            kernel_jacobi_cuda_v2<<<grid, block, 0, streams[thread_num]>>>(n, uvm_A, uvm_B);
 
             // Sincronizzazione dello stream
-            cudaStreamSynchronize(streams[i]);
+            cudaStreamSynchronize(streams[thread_num]);
 
-			cudaMemcpyAsync(A + start_row * n,
-                            uvm_A[i] + start_row * n,
-                            (end_row - start_row) * n * sizeof(DATA_TYPE),
-                            cudaMemcpyDeviceToHost, streams[i]);
+			cudaMemcpyAsync(&A[(start+1)*n],
+                            &uvm_A[(start+1)*n],
+                            (WORK_BLOCK-2) * n * sizeof(DATA_TYPE),
+                            cudaMemcpyDeviceToHost, streams[thread_num]);
+            //aspetta copia thread corrente
+			cudaStreamSynchronize(streams[thread_num]);
 	  }
 
+        if(thread_num > 0)
+              cudaStreamSynchronize(streams[thread_num-1]);			//ha calcolato il bordo sopra del prossimo step
+        if(thread_num < omp_get_num_threads()-1)
+              cudaStreamSynchronize(streams[thread_num+1]);
     }
+}
     stop_cuda_kernel(timer);
 	checkCudaError("cudaKernel fault v2");
 
-     for (int i = 0; i < NUM_STREAMS; i++) {
-        cudaFree(uvm_A[i]);
-        cudaFree(uvm_B[i]);
-    }
-    delete[] uvm_A;
-    delete[] uvm_B;
+    cudaFree(uvm_A);
+    cudaFree(uvm_B);
 
-    for (int i = 0; i < NUM_STREAMS; i++) {
+    for (int i = 0; i < ROW_DEEP; i++) {
         cudaStreamDestroy(streams[i]);
     }
     delete[] streams;

@@ -343,7 +343,7 @@ printf("initializing...");
   /* Prevent dead-code elimination. All live-out data must be printed
      by the function call in argument. */
   /* Stampa l'array risultante */
-  print_array(n, A);
+  //print_array(n, A);
 
   /* clean */
   for (int i = 0; i < n; i++) {
