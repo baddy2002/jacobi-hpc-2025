@@ -13,28 +13,28 @@ extern "C" {
 # if !defined(TSTEPS) && ! defined(N)
 /* Define the possible dataset sizes. */
 #  ifdef MINI_DATASET
-#   define TSTEPS 20
-#   define N 100
+#   define TSTEPS 100
+#   define N 128
 #  endif
 
 #  ifdef SMALL_DATASET
-#   define TSTEPS 100
-#   define N 500
+#   define TSTEPS 500
+#   define N 512
 #  endif
 
 #  ifdef STANDARD_DATASET /* Default if unspecified. */
-#   define TSTEPS 3000
-#   define N 4
+#   define TSTEPS 10
+#   define N 8
 #  endif
 
 #  ifdef LARGE_DATASET
 #   define TSTEPS 2000
-#   define N 2000
+#   define N 2048
 #  endif
 
 #  ifdef EXTRALARGE_DATASET
-#   define TSTEPS 2000
-#   define N 4000
+#   define TSTEPS 4000
+#   define N 4096
 #  endif
 # endif /* !N */
 

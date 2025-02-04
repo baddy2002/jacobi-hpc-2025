@@ -19,241 +19,81 @@ void checkCudaError(const char *msg) {
     }
 }
 
-// _________________________________________Kernel CUDA
 __global__ void kernel_jacobi_cuda_v1(int n, DATA_TYPE *A, DATA_TYPE *B) {
-    // Calcolare l'indice globale per il thread
+      // Indici globale
+    int i_start = blockIdx.y * blockDim.y + (threadIdx.y * TILE_W);
+    int j_start = blockIdx.x * blockDim.x + (threadIdx.x * TILE_W);
 
-    int i_start = blockIdx.y * blockDim.y + (threadIdx.y*TILE_W);
-    int j_start = blockIdx.x * blockDim.x + (threadIdx.x*TILE_W);
+    // Indici per accedere alla memoria condivisa
+    int i_shared = threadIdx.y*TILE_W+1;  // +1 per bordi
+    int j_shared = threadIdx.x*TILE_W+1;
 
-    // Calcolare il blocco TILE_W x TILE_W per thread
-    for (int i = i_start; i < i_start + TILE_W && i < n - 1; i++) {
-        for (int j = j_start; j < j_start + TILE_W && j < n - 1; j++) {
-            B[i * n + j] = 0.2 * (A[i * n + j] +
-                                  A[i * n + (j - 1)] +
-                                  A[i * n + (j + 1)] +
-                                  A[(i + 1) * n + j] +
-                                  A[(i - 1) * n + j]);
+    // Allocazione della memoria condivisa (dimensione fissa)
+    __shared__ DATA_TYPE A_sub[WORK_BLOCK][WORK_BLOCK];
+
+    //dobbiamo caricare TILE_W elementi per thread (quelli da calcolare)
+    for (int i = 0; i < TILE_W; i++) {
+      int gi = i_start + 1 + i;  //indici globali
+        for (int j = 0; j < TILE_W; j++) {
+            int gj = j_start + 1 + j;
+
+            if (gi < n && gj < n) {  // Controllo bounds
+              //carica elementi che deve calcolare
+              A_sub[i_shared + i][j_shared + j] = A[gi * n + gj];
+
+              //se il thread è nella prima riga del blocco deve caricare anche l'elemento del bordo alto
+			  	if(threadIdx.y == 0){
+					A_sub[0][j_shared + j] = A[(gi-1) * n + gj];
+              	}
+              //se il thread è nell'ultima riga del blocco deve caricare anche l'elemento del bordo basso
+				if (threadIdx.y == blockDim.y - 1) {
+					A_sub[WORK_BLOCK - 1][j_shared + j] = A[(gi+1) * n + gj];
+        	  	}
+              //se il thread è nella prima colnna del blocco deve caricare anche l'elemento del bordo a sinistra
+			   if (threadIdx.x == 0) {
+					A_sub[i_shared + i][0] = A[gi * n + gj-1];
+        		}
+              //se il thread è nell'ultima colonna del blocco deve caricare anche l'elemento del bordo a destra
+				if (threadIdx.x == blockDim.x - 1) {
+                    A_sub[i_shared + i][WORK_BLOCK - 1] = A[gi * n + gj+1];
+        		}
+            }
         }
     }
+    // Sincronizzare i thread per assicurarsi che tutti i dati siano caricati nella memoria condivisa
+    __syncthreads();
+
+    // Calcoliamo gli elementi, usando la memoria condivisa se disponibile
+    for (int i = i_start+1; i < i_start + TILE_W +1 && i < n - 1; i++) {
+        for (int j = j_start+1; j < j_start + TILE_W+1 && j < n - 1; j++) {
+            int i_shared_offset = i - (i_start+1 );  // nel caso di TILE_W>0
+            int j_shared_offset = j - (j_start+1);
+            // Calcoliamo solo se gli indici sono validi nella memoria condivisa
+            if (i_shared_offset+i_shared < WORK_BLOCK &&
+                j_shared_offset+j_shared < WORK_BLOCK) {
+
+                B[i * n + j] = 0.2 * (A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared] +
+                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared - 1] +
+                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared + 1] +
+                                      A_sub[i_shared+i_shared_offset + 1][j_shared_offset+j_shared] +
+                                      A_sub[i_shared+i_shared_offset - 1][j_shared_offset+j_shared]);
+                }
+        }
+    }
+
+     for (int i = i_start+1; i < i_start + TILE_W+1 && i < n - 1; i++) {
+        for (int j = j_start+1; j < j_start + TILE_W+1 && j < n - 1; j++) {
+            A[i * n + j] = B[i * n + j];
+    	}
+    }
+
 }
 
-//  _________________________________________________host CUDA
 void kernel_jacobi_cuda_v1_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
-
-
-    dim3 block(NUM_THREAD_BLOCK, NUM_THREAD_BLOCK); // Blocchi quadrati di dimensione TILE_W
-    // Calcolo TILE_W in base alla dimensione della matrice
-    dim3 grid((n + block.x - 1) / (NUM_THREAD_BLOCK*TILE_W), (n + block.y - 1) / (NUM_THREAD_BLOCK*TILE_W));
-
-    // Allochiamo sul device
-    DATA_TYPE *d_A, *d_B;
-    cudaMalloc((void **)&d_A, n * n * sizeof(DATA_TYPE));
-    cudaMalloc((void **)&d_B, n * n * sizeof(DATA_TYPE));
-
-    checkCudaError("cudaMalloc for d_A e d_B");
-    cudaMemcpy(d_A, A, n * n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
-    checkCudaError("cudaMemcpy d_A");
-
-    // Parte esecuzione gpu
-    start_cuda_kernel(timer);
-    for (int t = 0; t < tsteps; t++) {
-
-        kernel_jacobi_cuda_v1<<<grid, block>>>(n, d_A, d_B);
-        // Copiamo il risultato e richiamiamo il kernel
-        //sincronizza per evitare che il kernel dopo cominci con una copia di A inesatta
-        cudaDeviceSynchronize();
-        cudaMemcpy(d_A, d_B, n * n * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice);
-    }
-    checkCudaError("cudaKernel fault");
-	cudaDeviceSynchronize();
-    stop_cuda_kernel(timer);
-
-
-    cudaMemcpy(A, d_A, n * n * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-    cudaFree(d_A);
-    cudaFree(d_B);
-}
-
-__global__ void kernel_jacobi_cuda_v2(int n, DATA_TYPE *A, DATA_TYPE *B) {
-      // Dimensioni del blocco
-    int i_start = blockIdx.y * blockDim.y + (threadIdx.y * TILE_W);
-    int j_start = blockIdx.x * blockDim.x + (threadIdx.x * TILE_W);
-
-    // Indici per accedere alla memoria condivisa
-    int i_shared = threadIdx.y + 1;  // Offset di 1 per i bordi
-    int j_shared = threadIdx.x + 1;  // Offset di 1 per i bordi
-
-    // Allocazione della memoria condivisa (dimensione fissa)
-    __shared__ DATA_TYPE A_sub[WORK_BLOCK][WORK_BLOCK];
-
-
-    //dobbiamo caricare TILE_W elementi per thread
-    for (int i = 0; i < TILE_W; i++) {
-        for (int j = 0; j < TILE_W; j++) {
-            if (i_start + i < n && j_start + j < n) {
-                A_sub[i_shared + i][j_shared + j] = A[(i_start + i) * n + (j_start + j)];
-            }
-        }
-    }
-    // Caricare i bordi (righe e colonne precedenti)
-
-    // Top border
-    if (threadIdx.y == 0 && i_start > 0) {
-        A_sub[0][j_shared] = A[(i_start - 1) * n + (j_start + threadIdx.x)];
-    }
-    // Bottom border
-    if (threadIdx.y == blockDim.y - 1 && i_start + blockDim.y * TILE_W < n) {
-        A_sub[WORK_BLOCK - 1][j_shared] = A[(i_start + blockDim.y * TILE_W) * n + (j_start + threadIdx.x)];
-    }
-    // Left border
-    if (threadIdx.x == 0 && j_start > 0) {
-        A_sub[i_shared][0] = A[(i_start + threadIdx.y) * n + (j_start - 1)];
-    }
-    // Right border
-    if (threadIdx.x == blockDim.x - 1 && j_start + blockDim.x * TILE_W < n) {
-        A_sub[i_shared][WORK_BLOCK - 1] = A[(i_start + threadIdx.y) * n + (j_start + blockDim.x * TILE_W)];
-    }
-
-    // Sincronizzare i thread per assicurarsi che tutti i dati siano caricati nella memoria condivisa
-    __syncthreads();
-
-    // Calcoliamo gli elementi, usando la memoria condivisa se disponibile
-    for (int i = i_start; i < i_start + TILE_W && i < n - 1; i++) {
-        for (int j = j_start; j < j_start + TILE_W && j < n - 1; j++) {
-            int i_shared_offset = i - (i_start );  // Mappatura dell'indice globale in memoria condivisa
-            int j_shared_offset = j - (j_start);  // Mappatura dell'indice globale in memoria condivisa
-
-            // Calcoliamo solo se gli indici sono validi nella memoria condivisa
-            if (i_shared_offset+i_shared < WORK_BLOCK &&
-                j_shared_offset+j_shared < WORK_BLOCK) {
-                A[i * n + j] = 0.2 * (A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared] +
-                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared - 1] +
-                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared + 1] +
-                                      A_sub[i_shared+i_shared_offset + 1][j_shared_offset+j_shared] +
-                                      A_sub[i_shared+i_shared_offset - 1][j_shared_offset+j_shared]);
-                }
-        }
-    }
-
-}
-
-
-void kernel_jacobi_cuda_v2_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
     dim3 block(NUM_THREAD_BLOCK, NUM_THREAD_BLOCK);
-    dim3 grid((n + block.x - 1) / (NUM_THREAD_BLOCK * TILE_W), (n + block.y - 1) / (NUM_THREAD_BLOCK * TILE_W));
-
-    //host
-    DATA_TYPE *h_A;// *h_B;
-    //device
-    DATA_TYPE *d_A, *d_B;
-
-
-    // Allocazione della memoria pinned
-    //https://forums.developer.nvidia.com/t/cudamallochost-and-cudahostalloc-differences-and-usage/21056/2
-	checkCudaError("cudaMalloc for h_A e h_B");
-    cudaHostAlloc((void **)&h_A, n * n * sizeof(DATA_TYPE), cudaHostAllocDefault);
-
-    // Copiamo i dati iniziali nella memoria pinned
-    memcpy(h_A, A, n * n * sizeof(DATA_TYPE));
-	checkCudaError("cudaMemcpy h_A");
-
-
-    // Allocazione sul device
-    checkCudaError("cudaMalloc for d_A e d_B");
-    cudaMalloc((void **)&d_A, n * n * sizeof(DATA_TYPE));
-    cudaMalloc((void **)&d_B, n * n * sizeof(DATA_TYPE));
-    cudaMemcpy(d_A, h_A, n * n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
-	checkCudaError("cudaMemcpy d_A");
-
-    start_cuda_kernel(timer);
-    for (int t = 0; t < tsteps; t++) {
-        kernel_jacobi_cuda_v2<<<grid, block>>>(n, d_A, d_B);
-        //cudaMemcpy(d_A, d_B, n * n * sizeof(DATA_TYPE), cudaMemcpyDeviceToDevice);
-        //sincronizza per evitare che il kernel dopo cominci con una copia di A inesatta
-        cudaDeviceSynchronize();
-    }
-    checkCudaError("cudaKernel fault v3");
-
-    stop_cuda_kernel(timer);
-
-    // Copiamo i risultati nella memoria host pinned
-    cudaMemcpy(h_A, d_A, n * n * sizeof(DATA_TYPE), cudaMemcpyDeviceToHost);
-    memcpy(A, h_A, n * n * sizeof(DATA_TYPE));
-
-    // Deallocazione
-    cudaFreeHost(h_A);
-
-    cudaFree(d_A);
-    cudaFree(d_B);
-}
-
-__global__ void kernel_jacobi_cuda_v3(int n, DATA_TYPE *A, DATA_TYPE *B) {
-      // Dimensioni del blocco
-    int i_start = blockIdx.y * blockDim.y + (threadIdx.y * TILE_W);
-    int j_start = blockIdx.x * blockDim.x + (threadIdx.x * TILE_W);
-
-    // Indici per accedere alla memoria condivisa
-    int i_shared = threadIdx.y + 1;  // Offset di 1 per i bordi
-    int j_shared = threadIdx.x + 1;  // Offset di 1 per i bordi
-
-    // Allocazione della memoria condivisa (dimensione fissa)
-    __shared__ DATA_TYPE A_sub[WORK_BLOCK][WORK_BLOCK];
-
-
-    //dobbiamo caricare TILE_W elementi per thread
-    for (int i = 0; i < TILE_W; i++) {
-        for (int j = 0; j < TILE_W; j++) {
-            if (i_start + i < n && j_start + j < n) {
-                A_sub[i_shared + i][j_shared + j] = A[(i_start + i) * n + (j_start + j)];
-            }
-        }
-    }
-    // Caricare i bordi (righe e colonne precedenti)
-
-    // Top border
-    if (threadIdx.y == 0 && i_start > 0) {
-        A_sub[0][j_shared] = A[(i_start - 1) * n + (j_start + threadIdx.x)];
-    }
-    // Bottom border
-    if (threadIdx.y == blockDim.y - 1 && i_start + blockDim.y * TILE_W < n) {
-        A_sub[WORK_BLOCK - 1][j_shared] = A[(i_start + blockDim.y * TILE_W) * n + (j_start + threadIdx.x)];
-    }
-    // Left border
-    if (threadIdx.x == 0 && j_start > 0) {
-        A_sub[i_shared][0] = A[(i_start + threadIdx.y) * n + (j_start - 1)];
-    }
-    // Right border
-    if (threadIdx.x == blockDim.x - 1 && j_start + blockDim.x * TILE_W < n) {
-        A_sub[i_shared][WORK_BLOCK - 1] = A[(i_start + threadIdx.y) * n + (j_start + blockDim.x * TILE_W)];
-    }
-
-    // Sincronizzare i thread per assicurarsi che tutti i dati siano caricati nella memoria condivisa
-    __syncthreads();
-
-    // Calcoliamo gli elementi, usando la memoria condivisa se disponibile
-    //salviamo direttamente in A dato che i dati vengono presi da A_sub per questo passo
-    for (int i = i_start; i < i_start + TILE_W && i < n - 1; i++) {
-        for (int j = j_start; j < j_start + TILE_W && j < n - 1; j++) {
-            int i_shared_offset = i - (i_start );  // Mappatura dell'indice globale in memoria condivisa
-            int j_shared_offset = j - (j_start);  // Mappatura dell'indice globale in memoria condivisa
-
-            // Calcoliamo solo se gli indici sono validi nella memoria condivisa
-            if (i_shared_offset+i_shared < WORK_BLOCK &&
-                j_shared_offset+j_shared < WORK_BLOCK) {
-                A[i * n + j] = 0.2 * (A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared] +
-                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared - 1] +
-                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared + 1] +
-                                      A_sub[i_shared+i_shared_offset + 1][j_shared_offset+j_shared] +
-                                      A_sub[i_shared+i_shared_offset - 1][j_shared_offset+j_shared]);
-                }
-        }
-    }
-}
-
-void kernel_jacobi_cuda_v3_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
-    dim3 block(NUM_THREAD_BLOCK, NUM_THREAD_BLOCK);
-    dim3 grid((n + block.x - 1) / (NUM_THREAD_BLOCK * TILE_W), (n + block.y - 1) / (NUM_THREAD_BLOCK * TILE_W));
+    int el_per_thread = (NUM_THREAD_BLOCK * TILE_W);
+    int size_x = ((n-2)+ block.x - 1); int size_y = ((n-2) + block.y - 1);
+    dim3 grid( size_x / el_per_thread, size_y / el_per_thread );
 
     DATA_TYPE *uvm_A, *uvm_B;
 
@@ -263,10 +103,11 @@ void kernel_jacobi_cuda_v3_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, T
 
     // Copiamo i dati iniziali in UVM
     cudaMemcpy(uvm_A, A, n * n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
+	cudaMemcpy(uvm_B, B, n * n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
 
     start_cuda_kernel(timer);
     for (int t = 0; t < tsteps; t++) {
-        kernel_jacobi_cuda_v3<<<grid, block>>>(n, uvm_A, uvm_B);
+        kernel_jacobi_cuda_v1<<<grid, block>>>(n, uvm_A, uvm_B);
         cudaDeviceSynchronize();
     }
     stop_cuda_kernel(timer);
@@ -280,10 +121,153 @@ void kernel_jacobi_cuda_v3_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, T
     cudaFree(uvm_B);
 }
 
-__global__ void kernel_jacobi_cuda_v4(int n, DATA_TYPE *__restrict__ A, DATA_TYPE *__restrict__ B, int offset_i, int offset_j) {
+__global__ void kernel_jacobi_cuda_v2(int n, DATA_TYPE *A, DATA_TYPE *B) {
+      // Indici globale
+    int i_start = blockIdx.y * blockDim.y + (threadIdx.y * TILE_W);
+    int j_start = blockIdx.x * blockDim.x + (threadIdx.x * TILE_W);
+
+    // Indici per accedere alla memoria condivisa
+    int i_shared = threadIdx.y*TILE_W+1;  // +1 per bordi
+    int j_shared = threadIdx.x*TILE_W+1;
+
+    // Allocazione della memoria condivisa (dimensione fissa)
+    __shared__ DATA_TYPE A_sub[WORK_BLOCK][WORK_BLOCK];
+
+    //dobbiamo caricare TILE_W elementi per thread (quelli da calcolare)
+    for (int i = 0; i < TILE_W; i++) {
+      int gi = i_start + 1 + i;  //indici globali
+        for (int j = 0; j < TILE_W; j++) {
+            int gj = j_start + 1 + j;
+
+            if (gi < n && gj < n) {  // Controllo bounds
+              //carica elementi che deve calcolare
+              A_sub[i_shared + i][j_shared + j] = A[gi * n + gj];
+
+              //se il thread è nella prima riga del blocco deve caricare anche l'elemento del bordo alto
+			  	if(threadIdx.y == 0){
+					A_sub[0][j_shared + j] = A[(gi-1) * n + gj];
+              	}
+              //se il thread è nell'ultima riga del blocco deve caricare anche l'elemento del bordo basso
+				if (threadIdx.y == blockDim.y - 1) {
+					A_sub[WORK_BLOCK - 1][j_shared + j] = A[(gi+1) * n + gj];
+        	  	}
+              //se il thread è nella prima colnna del blocco deve caricare anche l'elemento del bordo a sinistra
+			   if (threadIdx.x == 0) {
+					A_sub[i_shared + i][0] = A[gi * n + gj-1];
+        		}
+              //se il thread è nell'ultima colonna del blocco deve caricare anche l'elemento del bordo a destra
+				if (threadIdx.x == blockDim.x - 1) {
+                    A_sub[i_shared + i][WORK_BLOCK - 1] = A[gi * n + gj+1];
+        		}
+            }
+        }
+    }
+    // Sincronizzare i thread per assicurarsi che tutti i dati siano caricati nella memoria condivisa
+    __syncthreads();
+
+    // Calcoliamo gli elementi, usando la memoria condivisa se disponibile
+    for (int i = i_start+1; i < i_start + TILE_W +1 && i < n - 1; i++) {
+        for (int j = j_start+1; j < j_start + TILE_W+1 && j < n - 1; j++) {
+            int i_shared_offset = i - (i_start+1 );  // nel caso di TILE_W>0
+            int j_shared_offset = j - (j_start+1);
+            if(threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 1 && blockIdx.y == 0)
+
+            // Calcoliamo solo se gli indici sono validi nella memoria condivisa
+            if (i_shared_offset+i_shared < WORK_BLOCK &&
+                j_shared_offset+j_shared < WORK_BLOCK) {
+                if(threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 1 && blockIdx.y == 0)
+
+                B[i * n + j] = 0.2 * (A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared] +
+                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared - 1] +
+                                      A_sub[i_shared+i_shared_offset][j_shared_offset+j_shared + 1] +
+                                      A_sub[i_shared+i_shared_offset + 1][j_shared_offset+j_shared] +
+                                      A_sub[i_shared+i_shared_offset - 1][j_shared_offset+j_shared]);
+                }
+        }
+    }
+
+     for (int i = i_start+1; i < i_start + TILE_W+1 && i < n - 1; i++) {
+        for (int j = j_start+1; j < j_start + TILE_W+1 && j < n - 1; j++) {
+            A[i * n + j] = B[i * n + j];
+    	}
+    }
+
+}
+
+void kernel_jacobi_cuda_v2_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
+    dim3 block(NUM_THREAD_BLOCK, NUM_THREAD_BLOCK);
+    int el_per_thread = (NUM_THREAD_BLOCK * TILE_W);
+    int size_x = ((n-2)+ block.x - 1); int size_y = ((n-2) + block.y - 1);
+    dim3 grid( size_x / el_per_thread, size_y / el_per_thread );
+
+    // Creazione degli stream
+    cudaStream_t *streams = new cudaStream_t[NUM_STREAMS];
+    for (int i = 0; i < NUM_STREAMS; i++) {
+        cudaStreamCreate(&streams[i]);
+    }
+
+   // Allocazione di memoria UVM per ogni stream
+    DATA_TYPE **uvm_A = new DATA_TYPE*[NUM_STREAMS];
+    DATA_TYPE **uvm_B = new DATA_TYPE*[NUM_STREAMS];
+    for (int i = 0; i < NUM_STREAMS; i++) {
+        cudaMallocManaged(&uvm_A[i], n * n * sizeof(DATA_TYPE));
+        cudaMallocManaged(&uvm_B[i], n * n * sizeof(DATA_TYPE));
+    }
+
+    // Suddivisione della matrice in blocchi per gli stream
+    int rows_per_stream = (n + NUM_STREAMS - 1) / NUM_STREAMS;
+
+    start_cuda_kernel(timer);
+    for (int t = 0; t < tsteps; t++) {
+      for (int i = 0; i < NUM_STREAMS; i++) {
+            int start_row = i * (rows_per_stream - 2 * WORK_BLOCK); // Sovrapposizione per i bordi
+            int end_row = (i == NUM_STREAMS - 1) ? n : (i + 1) * (rows_per_stream - 2 * WORK_BLOCK);
+
+            // Aggiungi i bordi
+            int start_row_with_borders = max(0, start_row - WORK_BLOCK);
+            int end_row_with_borders = min(n, end_row + WORK_BLOCK);
+
+            // Copia asincrona dei dati in UVM per ogni stream
+            cudaMemcpyAsync(uvm_A[i] + start_row_with_borders * n,
+                            A + start_row_with_borders * n,
+                            (end_row_with_borders - start_row_with_borders) * n * sizeof(DATA_TYPE),
+                            cudaMemcpyHostToDevice, streams[i]);
+
+            // Esecuzione del kernel per ogni stream
+            kernel_jacobi_cuda_v2<<<grid, block, 0, streams[i]>>>(n, uvm_A[i], uvm_B[i]);
+
+            // Sincronizzazione dello stream
+            cudaStreamSynchronize(streams[i]);
+
+			cudaMemcpyAsync(A + start_row * n,
+                            uvm_A[i] + start_row * n,
+                            (end_row - start_row) * n * sizeof(DATA_TYPE),
+                            cudaMemcpyDeviceToHost, streams[i]);
+	  }
+
+    }
+    stop_cuda_kernel(timer);
+	checkCudaError("cudaKernel fault v2");
+
+     for (int i = 0; i < NUM_STREAMS; i++) {
+        cudaFree(uvm_A[i]);
+        cudaFree(uvm_B[i]);
+    }
+    delete[] uvm_A;
+    delete[] uvm_B;
+
+    for (int i = 0; i < NUM_STREAMS; i++) {
+        cudaStreamDestroy(streams[i]);
+    }
+    delete[] streams;
+}
+
+/*
+__global__ void kernel_jacobi_cuda_v2(int n, DATA_TYPE *__restrict__ A, DATA_TYPE *__restrict__ B, int offset_i, int offset_j) {
       // Dimensioni del blocco
     int i_start = blockIdx.y * blockDim.y + (threadIdx.y * STREAM_TILE_W)+offset_i;
     int j_start = blockIdx.x * blockDim.x + (threadIdx.x * STREAM_TILE_W) + offset_j;
+    printf("i_start %d, j_start %d\n", i_start, j_start);
 
     // Indici per accedere alla memoria condivisa
     int i_shared = threadIdx.y + 1;  // Offset di 1 per i bordi
@@ -336,7 +320,9 @@ __global__ void kernel_jacobi_cuda_v4(int n, DATA_TYPE *__restrict__ A, DATA_TYP
 
     // Calcoliamo gli elementi, usando la memoria condivisa se disponibile
     for (int i = i_start; i < i_start + STREAM_TILE_W && i < n - 1; i++) {
+      if(i==0) ++i;
         for (int j = j_start; j < j_start + STREAM_TILE_W && j < n - 1; j++) {
+          if(j==0) ++j;
             int i_shared_offset = i - (i_start );  // Mappatura dell'indice globale in memoria condivisa
             int j_shared_offset = j - (j_start);  // Mappatura dell'indice globale in memoria condivisa
 
@@ -355,17 +341,17 @@ __global__ void kernel_jacobi_cuda_v4(int n, DATA_TYPE *__restrict__ A, DATA_TYP
 
 }
 
-void kernel_jacobi_cuda_v4_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
+void kernel_jacobi_cuda_v2_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer) {
     dim3 block(NUM_THREAD_BLOCK, NUM_THREAD_BLOCK);
+    int el_per_thread = (NUM_THREAD_BLOCK * TILE_W);
+    int size_x = ((n-2)/NUM_STREAMS + block.x - 1); int size_y = ((n-2) + block.y - 1);
 
     dim3 grid((n/NUM_STREAMS + block.x - 1) / (NUM_THREAD_BLOCK * STREAM_TILE_W), (n/NUM_STREAMS + block.y - 1) / (NUM_THREAD_BLOCK * STREAM_TILE_W));
 
     DATA_TYPE *uvm_A, *uvm_B;
 	// Creazione di stream CUDA (come matrice)
     cudaStream_t streams[NUM_STREAMS*NUM_STREAMS];
-    /*for (int i = 0; i < NUM_STREAMS*NUM_STREAMS; i++) {
-        cudaStreamCreate(&streams[i]);
-    }*/
+
     // Allocazione di memoria UVM
     if (cudaMallocManaged(&uvm_A, n * n * sizeof(DATA_TYPE)) != cudaSuccess) {
         printf("Error allocating memory for uvm_A!\n");
@@ -374,6 +360,7 @@ void kernel_jacobi_cuda_v4_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, T
         printf("Error allocating memory for uvm_B!\n");
     }
     cudaMemcpy(uvm_A, A, n * n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
+	cudaMemcpy(uvm_B, B, n * n * sizeof(DATA_TYPE), cudaMemcpyHostToDevice);
 
     start_cuda_kernel(timer);
 
@@ -393,7 +380,7 @@ void kernel_jacobi_cuda_v4_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, T
                 int j= s%NUM_STREAMS;
                 int offset_i = i * (n / NUM_STREAMS);  // Offset delle righe
                 int offset_j = j * (n / NUM_STREAMS);  // Offset delle colonne
-                /*
+                ///*
                 parte commentata poichè caricare in memoria dati parziali e far partire il kernel mano a mano
                 non sembra aver dato alcun vantaggio rispetto a copia unica iniziale
             	if (t == 0) {
@@ -407,9 +394,10 @@ void kernel_jacobi_cuda_v4_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, T
                         streams[s]);
             	    cudaStreamSynchronize(streams[s]);
                 }
-                 */
+                 //--fine_commento/
                 // Lancia il kernel sullo stream correlato
-                kernel_jacobi_cuda_v4<<<grid, block, 0, streams[omp_get_thread_num()]>>>(
+                printf("offset_i %d, offset_j %d\n", offset_i, offset_j);
+                kernel_jacobi_cuda_v2<<<grid, block, 0, streams[omp_get_thread_num()]>>>(
                     n, uvm_A, uvm_B, offset_i, offset_j);
 
                 //sincronizza stream
@@ -449,8 +437,9 @@ void kernel_jacobi_cuda_v4_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, T
     for (int i = 0; i < NUM_STREAMS * NUM_STREAMS; i++) {
         cudaStreamDestroy(streams[i]);
         checkCudaError("cudaStreamDestroy error");
-    }*/
+    }
 }
+*/
 
 void check_device_properties() {
     int deviceCount = 0;

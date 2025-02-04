@@ -10,6 +10,45 @@
 #include "jacobi_2d_cuda.cuh"
 #endif
 
+/* DCE code. Must scan the entire live-out data.
+   Can be used also to check the correctness of the output. */
+static void print_array(int n,
+                        DATA_TYPE **A)
+
+{
+  int i, j;
+
+  for (i = 0; i < n; i++) {
+    for (j = 0; j < n; j++)
+    {
+      fprintf(stderr, DATA_PRINTF_MODIFIER, A[i][j]);
+
+    }
+    fprintf(stderr, "\n");
+  }
+
+}
+
+
+static void print_array_1D(int n,
+                        DATA_TYPE *A)
+
+{
+  int i, j;
+
+  for (i = 0; i < n; i++) {
+    for (j = 0; j < n; j++)
+    {
+      fprintf(stderr, DATA_PRINTF_MODIFIER, A[i*n+j]);
+
+    }
+    fprintf(stderr, "\n");
+  }
+
+}
+
+
+
 /* Array initialization. */
 static void init_array(int n,
                        DATA_TYPE **A,
@@ -25,23 +64,6 @@ static void init_array(int n,
     }
 }
 
-/* DCE code. Must scan the entire live-out data.
-   Can be used also to check the correctness of the output. */
-static void print_array(int n,
-                        DATA_TYPE **A)
-
-{
-  int i, j;
-
-  for (i = 0; i < n; i++)
-    for (j = 0; j < n; j++)
-    {
-      fprintf(stderr, DATA_PRINTF_MODIFIER, A[i][j]);
-      if ((i * n + j) % 20 == 0)
-        fprintf(stderr, "\n");
-    }
-  fprintf(stderr, "\n");
-}
 
 /* Main computational kernel. The whole function will be timed,
    including the call and return. */
@@ -134,34 +156,8 @@ static void kernel_cpu_jacobi_v3(int tsteps,
   } //for
 }
 
+
 static void kernel_cpu_jacobi_v4(int tsteps,
-                                   int n,
-                                   DATA_TYPE **A,
-                                   DATA_TYPE **B)
-{
-  int t, i, j;
-
-  for (t = 0; t < tsteps; t++)
-  {
-#pragma omp parallel
-    {
-#pragma omp for schedule(static)
-      for (i = 1; i < n - 1; i++)
-#pragma omp simd
-        for (j = 1; j < n - 1; j++)
-          B[i][j] = 0.2 * (A[i][j] + A[i][j - 1] + A[i][1 + j] + A[1 + i][j] + A[i - 1][j]);
-#pragma omp barrier
-#pragma omp for schedule(static)
-      for (i = 1; i < n - 1; i++)
-#pragma omp simd
-        for (j = 1; j < n - 1; j++)
-          A[i][j] = B[i][j];
-    } //pragma
-  } //for
-}
-
-
-static void kernel_cpu_jacobi_v5(int tsteps,
                                    int n,
                                    DATA_TYPE **A,
                                    DATA_TYPE **B)
@@ -201,104 +197,6 @@ static void kernel_gpu_jacobi_v1(int tsteps,
                                    DATA_TYPE *B)
 {
   int t, i, j;
-  for (t = 0; t < tsteps; t++)
-  {
-    #pragma omp target data map(to:n,A[0:n*n]) map(from:B[0:n*n])
-    {
-      for (i = 1; i < n - 1; i++) {
-        for (j = 1; j < n - 1; j++) {
-          B[i * n + j] = 0.2 * (A[i * n + j] +
-                                 A[i * n + (j-1)] +
-                                 A[i * n + (j+1)] +
-                                 A[(i+1) * n + j] +
-                                 A[(i-1) * n + j]);
-        }
-      }
-    }
-
-    #pragma omp target data map(to:n,B[0:n*n]) map(from:A[0:n*n])
-    {
-    for (i = 1; i < n - 1; i++)
-      for (j = 1; j < n - 1; j++)
-        A[i * n + j] = B[i * n + j];
-    }
-  }
-
-}
-
-
-
-static void kernel_gpu_jacobi_v2(int tsteps,
-                                   int n,
-                                   DATA_TYPE *A,
-                                   DATA_TYPE *B)
-{
-  int t, i, j;
-
-  for (t = 0; t < tsteps; t++)
-  {
-#pragma omp target data map(to:n,A[0:n*n]) map(from:B[0:n*n])
-#pragma omp target teams distribute parallel for
-    for (i = 1; i < n - 1; i++) {
-      for (j = 1; j < n - 1; j++) {
-        B[i * n + j] = 0.2 * (A[i * n + j] +
-                               A[i * n + (j-1)] +
-                               A[i * n + (j+1)] +
-                               A[(i+1) * n + j] +
-                               A[(i-1) * n + j]);
-      }
-    }
-#pragma omp target data map(to:n,B[0:n*n]) map(from:A[0:n*n])
-#pragma omp target teams distribute parallel for
-    for (i = 1; i < n - 1; i++)
-      for (j = 1; j < n - 1; j++)
-        A[i * n + j] = B[i * n + j];
-  }
-}
-
-static void kernel_gpu_jacobi_v3(int tsteps,
-                                   int n,
-                                   DATA_TYPE *A,
-                                   DATA_TYPE *B)
-{
-  int t, i, j;
-
-  for (t = 0; t < tsteps; t++)
-  {
-    // Prima regione target per il calcolo su B
-#pragma omp target data map(to:A[0:n*n]) map(from:B[0:n*n])
-    {
-#pragma omp target teams num_teams((n*n + NTHREADS_GPU - 1) / NTHREADS_GPU) thread_limit(NTHREADS_GPU)
-#pragma omp distribute parallel for collapse(2) num_threads(NTHREADS_GPU) dist_schedule(static, NTHREADS_GPU) schedule(static, 1)
-      for (i = 1; i < n - 1; i++) {
-        for (j = 1; j < n - 1; j++) {
-          B[i * n + j] = 0.2 * (A[i * n + j] +
-                                 A[i * n + (j-1)] +
-                                 A[i * n + (j+1)] +
-                                 A[(i+1) * n + j] +
-                                 A[(i-1) * n + j]);
-        }
-      }
-    }
-
-    // Seconda regione target per il calcolo su A
-#pragma omp target data map(to:B[0:n*n]) map(from:A[0:n*n])
-{
-#pragma omp target teams num_teams((n*n + NTHREADS_GPU - 1) / NTHREADS_GPU) thread_limit(NTHREADS_GPU)
-#pragma omp distribute parallel for collapse(2) num_threads(NTHREADS_GPU) dist_schedule(static, NTHREADS_GPU) schedule(static, 1)
-  for (i = 1; i < n - 1; i++)
-    for (j = 1; j < n - 1; j++)
-      A[i * n + j] = B[i * n + j];
-}
-  }
-}
-
-static void kernel_gpu_jacobi_v4(int tsteps,
-                                   int n,
-                                   DATA_TYPE *A,
-                                   DATA_TYPE *B)
-{
-  int t, i, j;
 
   // Gestione dei dati di A e B tra host e device
 #pragma omp target enter data map(to:n,A[0:n*n]) map(alloc:B[0:n*n])
@@ -321,13 +219,12 @@ static void kernel_gpu_jacobi_v4(int tsteps,
     }
 
     // Seconda regione target per il calcolo su A
-{
 #pragma omp target teams num_teams(teams) thread_limit(NTHREADS_GPU)
 #pragma omp distribute parallel for collapse(2) num_threads(NTHREADS_GPU) dist_schedule(static, NTHREADS_GPU) schedule(static, 1)
   for (i = 1; i < n - 1; i++)
     for (j = 1; j < n - 1; j++)
           A[i * n + j] = B[i * n + j];
-}
+
   }
 
   // Uscita dei dati dalla memoria del device
@@ -378,7 +275,6 @@ printf("initializing...");
       B_1D[i * n + j] = B[i][j];
     }
   }
-
   #endif
 
   /* Timer */
@@ -406,29 +302,9 @@ printf("initializing...");
   start_instruments(&timer, 0); // CPU
   kernel_cpu_jacobi_v4(tsteps, n, A, B);
   stop_instruments(&timer, 0);
-#elif defined(CPU_V5)
-  start_instruments(&timer, 0); // CPU
-  kernel_cpu_jacobi_v5(tsteps, n, A, B);
-  stop_instruments(&timer, 0);
 #elif defined(GPU_V1)
   start_instruments(&timer, 1); // GPU
   kernel_gpu_jacobi_v1(tsteps, n, A_1D, B_1D);
-  stop_instruments(&timer, 1);
-#elif defined(GPU_V2)
-  start_instruments(&timer, 1); // GPU
-  kernel_gpu_jacobi_v2(tsteps, n, A_1D, B_1D);
-  stop_instruments(&timer, 1);
-#elif defined(GPU_V3)
-  start_instruments(&timer, 1); // GPU
-  kernel_gpu_jacobi_v3(tsteps, n, A_1D, B_1D);
-  stop_instruments(&timer, 1);
-#elif defined(GPU_V4)
-  start_instruments(&timer, 1); // GPU
-  kernel_gpu_jacobi_v4(tsteps, n, A_1D, B_1D);
-  stop_instruments(&timer, 1);
-#elif defined(GPU_V5)
-  start_instruments(&timer, 1); // GPU
-  //kernel_gpu_jacobi_v5(tsteps, n, A_1D, B_1D);
   stop_instruments(&timer, 1);
 #elif defined(CUDA_V1)
   start_instruments(&timer, 1); // GPU
@@ -437,14 +313,6 @@ printf("initializing...");
 #elif defined(CUDA_V2)
   start_instruments(&timer, 1); // GPU
   kernel_jacobi_cuda_v2_host(tsteps, n, A_1D, B_1D, &timer);
-  stop_instruments(&timer, 1);
-#elif defined(CUDA_V3)
-  start_instruments(&timer, 1); // GPU
-  kernel_jacobi_cuda_v3_host(tsteps, n, A_1D, B_1D, &timer);
-  stop_instruments(&timer, 1);
-#elif defined(CUDA_V4)
-  start_instruments(&timer, 1); // GPU
-  kernel_jacobi_cuda_v4_host(tsteps, n, A_1D, B_1D, &timer);
   stop_instruments(&timer, 1);
 #else
   start_instruments(&timer, 0); // CPU di default
