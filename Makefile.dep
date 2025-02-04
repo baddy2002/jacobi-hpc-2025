@@ -1,2 +1,0 @@
-jacobi-2d-imper.o: jacobi-2d-imper.c timing.h jacobi-2d-imper.h
-timing.o: timing.c timing.h

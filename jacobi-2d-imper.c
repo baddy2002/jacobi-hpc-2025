@@ -147,7 +147,6 @@ static void kernel_cpu_jacobi_v3(int tsteps,
 #pragma omp simd
         for (j = 1; j < n - 1; j++)
           B[i][j] = 0.2 * (A[i][j] + A[i][j - 1] + A[i][1 + j] + A[1 + i][j] + A[i - 1][j]);
-#pragma omp barrier
 #pragma parallel omp for schedule(static)
       for (i = 1; i < n - 1; i++)
 #pragma omp simd
@@ -314,6 +313,10 @@ printf("initializing...");
   start_instruments(&timer, 1); // GPU
   kernel_jacobi_cuda_v2_host(tsteps, n, A_1D, B_1D, &timer);
   stop_instruments(&timer, 1);
+#elif defined(CUDA_V3)
+  start_instruments(&timer, 1); // GPU
+  kernel_jacobi_cuda_v3_host(tsteps, n, A_1D, B_1D, &timer);
+  stop_instruments(&timer, 1);
 #else
   start_instruments(&timer, 0); // CPU di default
   kernel_jacobi_2d_imper(tsteps, n, A, B);
@@ -343,7 +346,7 @@ printf("initializing...");
   /* Prevent dead-code elimination. All live-out data must be printed
      by the function call in argument. */
   /* Stampa l'array risultante */
-  print_array(n, A);
+  //print_array(n, A);
 
   /* clean */
   for (int i = 0; i < n; i++) {

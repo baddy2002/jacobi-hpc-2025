@@ -44,7 +44,7 @@ EXE_CUDA_V4 = $(BENCHMARK)_cuda_v4_out
 .PHONY: all exe clean veryclean run
 
 # Target per compilare tutti gli eseguibili
-all: $(EXE_GPU_V1).o timing.o $(EXE) $(EXE_CPU_V1) $(EXE_CPU_V2) $(EXE_CPU_V3) $(EXE_CPU_V4) $(EXE_GPU_V1) $(EXE_CUDA_V1)  $(EXE_CUDA_V2)
+all: $(EXE_GPU_V1).o timing.o $(EXE) $(EXE_CPU_V1) $(EXE_CPU_V2) $(EXE_CPU_V3) $(EXE_CPU_V4) $(EXE_GPU_V1) $(EXE_CUDA_V1) $(EXE_CUDA_V2) $(EXE_CUDA_V3)
 
 cpu_v1: $(EXE_CPU_V1)
 cpu_v2: $(EXE_CPU_V2)
@@ -55,7 +55,7 @@ gpu_v1: $(EXE_GPU_V1)
 
 cuda_v1: $(EXE_CUDA_V1)
 cuda_v2: $(EXE_CUDA_V2)
-
+cuda_v3: $(EXE_CUDA_V3)
 
 $(EXE): $(SRC) $(HEADERS)
 	$(CC) $(CFLAGS) $(INCPATHS) $^ -o $@ $(LDFLAGS)
@@ -88,9 +88,12 @@ $(EXE_CUDA_V1): $(SRC) $(HEADERS) $(CUFILES)
 $(EXE_CUDA_V2): $(SRC) $(HEADERS) $(CUFILES)
 	$(NVCC) $(NVCCFLAGS) $(CUDA) --ptxas-options=-v -g -DCUDA_V2 $(SRC) $(CUFILES) -o $@ $(NVCCLDFLAGS)
 
+$(EXE_CUDA_V3): $(SRC) $(HEADERS) $(CUFILES)
+	$(NVCC) $(NVCCFLAGS) $(CUDA) --ptxas-options=-v -g -DCUDA_V3 $(SRC) $(CUFILES) -o $@ $(NVCCLDFLAGS)
+
 # Target per pulire i file generati
 clean:
-	-rm -vf $(EXE) $(EXE_CPU_V1) $(EXE_CPU_V2) $(EXE_CPU_V3) $(EXE_CPU_V4) $(EXE_CPU_V5) timing.o $(EXE_GPU_V1).o $(EXE_GPU_V1) $(EXE_CUDA_V1) $(EXE_CUDA_V2)  *~
+	-rm -vf $(EXE) $(EXE_CPU_V1) $(EXE_CPU_V2) $(EXE_CPU_V3) $(EXE_CPU_V4) $(EXE_CPU_V5) timing.o $(EXE_GPU_V1).o $(EXE_GPU_V1) $(EXE_CUDA_V1) $(EXE_CUDA_V2) $(EXE_CUDA_V3)  *~
 
 # Target per una pulizia completa
 veryclean: clean

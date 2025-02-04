@@ -10,6 +10,7 @@ extern "C" {
     void check_device_properties();
     void kernel_jacobi_cuda_v1_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer);
     void kernel_jacobi_cuda_v2_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer);
+    void kernel_jacobi_cuda_v3_host(int tsteps, int n, DATA_TYPE *A, DATA_TYPE *B, Timing *timer);
 
 #ifdef __cplusplus
 }
