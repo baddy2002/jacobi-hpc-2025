@@ -6,10 +6,11 @@ CUFILES = jacobi_2d_cuda.cu
 DEPS        := Makefile.dep
 DEP_FLAG    := -MM
 
+
 CC = gcc
 CLANG = clang
 NVCC = /usr/local/cuda/bin/nvcc
-NVCCFLAGS=  $(NVOPT)
+NVCCFLAGS=  $(NVOPT) $(EXT_CFLAGS)
 NVCCLDFLAGS = -lcuda -lcudart
 NVOPT= -Xcompiler $(OPT) --ptxas-options=-v --use_fast_math -arch=sm_35
 LD = ld

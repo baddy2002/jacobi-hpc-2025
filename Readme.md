@@ -6,4 +6,4 @@ Sono stati usati 5 differenti dataset, ognuno di loro è riproducibile indicando
 - -DLARGE_DATASET       (N=2048, steps=2000)
 - -DEXTRALARGE_DATASET  (N=4096, steps=4000)
 
-e.g make all -DSTANDARD_DATASET -> compilerà tutti i programmi (tutte le versioni) con un dataset 1024*1024 e 1000 iterazioni
+e.g make all EXT_CFLAGS="-DMINI_DATASET" -> compilerà tutti i programmi (tutte le versioni) con un dataset 128*128 e 100 iterazioni

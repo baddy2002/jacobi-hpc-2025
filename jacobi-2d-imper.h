@@ -24,7 +24,7 @@ extern "C" {
 
 #  ifdef STANDARD_DATASET /* Default if unspecified. */
 #   define TSTEPS 1000
-#   define N 512
+#   define N 1024
 #  endif
 
 #  ifdef LARGE_DATASET
