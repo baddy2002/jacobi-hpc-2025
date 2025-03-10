@@ -1,3 +1,13 @@
+# Jacobi Project
+
+Questo progetto è un esempio di come creare accelerazioni del metodo di jacobi per OpenMP e Cuda 
+
+
+Vedi altri miei progetti relativi a calcolo parallelo:
+- [Cuda](https://Baddy2002.github.io/Cuda) - Progetti di calcolo parallelo.
+
+
+
 Sono stati usati 5 differenti dataset, ognuno di loro è riproducibile indicando nel momento di compilazione con make quello desiderato: 
 
 - -DMINI_DATASET        (N=128, steps=100)
